@@ -1,49 +1,65 @@
-$SiteURL="https://genzeon.sharepoint.com/sites/testsharepoint"
-$LibraryName ="demo"
+# To run the script need site owner level access
+# require to install PnP moudules
+
+$SiteURL = "https://genzeon.sharepoint.com/sites/testsharepoint"  #Just put the Site URL of the sharepoint to deleted the duplicate versioniung history
+$LibraryName = "demopractice"  # Mention libraryName
 
 # Connect to SharePoint
-Connect-PnPOnline -Url $SiteURL -UseWebLogin
 
+Connect-PnPOnline -Url $SiteURL -UseWebLogin
 Function Cleanup-DuplicateVersions {
     param (
         [Parameter(Mandatory = $true)]
-        [string]$LibraryName
+        [string]$LibraryName,
+        [string]$FolderPath = ""
     )
 
     try {
-        # Get all items from the library
-        $Items = Get-PnPListItem -List $LibraryName -PageSize 1000
+        $Items = if ($FolderPath) {
+            Get-PnPListItem -List $LibraryName -FolderServerRelativeUrl $FolderPath -PageSize 1000
+        } else {
+            Get-PnPListItem -List $LibraryName -PageSize 1000
+        }
 
         foreach ($Item in $Items) {
-            # Get the file associated with the item
-            $File = Get-PnPFile -Url $Item["FileRef"] -AsListItem  
+            try {
+                if ($Item.FileSystemObjectType -eq "Folder") {
+                    $SubFolderPath = $Item["FileRef"]
+                    Cleanup-DuplicateVersions -LibraryName $LibraryName -FolderPath $SubFolderPath
+                }
+                elseif ($Item.FileSystemObjectType -eq "File" -and $Item["FileRef"]) {
+                    $File = Get-PnPFile -Url $Item["FileRef"] -AsListItem -ErrorAction Stop
 
-            # Load the Versions collection explicitly to avoid initialization error
-            Get-PnPProperty -ClientObject $File -Property Versions
+                    if ($File) {
+                        Get-PnPProperty -ClientObject $File -Property Versions -ErrorAction Stop
 
-            # Check if the file has versions
-            if ($File.Versions.Count -gt 0) {    #Change zero to how many version need kept 
-                $VersionGroups = $File.Versions | Group-Object { $_.Size, $_.CheckInComment }
+                        if ($File.Versions.Count -gt 1) {  # change 1 to how many verison need to kept  
+                            $VersionGroups = $File.Versions | Group-Object { $_.Size, $_.CheckInComment }
 
-                foreach ($Group in $VersionGroups) {
-                    if ($Group.Count -gt 1) {
-                        # Sort versions and delete duplicates
-                        $VersionsToDelete = $Group.Group | Sort-Object -Property Created -Descending | Select-Object -Skip 1  # Change one to how mant version need to kept so it will skip that much update file version
-                        foreach ($Version in $VersionsToDelete) {
-                            Write-Host "Deleting duplicate version $($Version.VersionLabel) of file $($File.Name)"
-                            $Version.DeleteObject()
+                            foreach ($Group in $VersionGroups) {
+                                if ($Group.Count -gt 1) {
+                                    $VersionsToDelete = $Group.Group | Sort-Object Created -Descending | Select-Object -Skip 1 #  change 1 to how many verison need to kept so that much version will skip
+                                    foreach ($Version in $VersionsToDelete) {
+                                        Write-Host "Deleting duplicate version '$($Version.VersionLabel)' of file '$($File.Name)' at '$($Item["FileRef"])'"
+                                        $Version.DeleteObject()
+
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+            } catch {
+                Write-Host "Error processing item $($Item["FileRef"]): $($_.Exception.Message)"
             }
         }
     } catch {
-        Write-Host "An error occurred: $_"
+        Write-Host "Error in Cleanup-DuplicateVersions: $($_.Exception.Message)"
     }
-}
-
-# Runs the cleanup function and pass the library name as a string
-Cleanup-DuplicateVersions -LibraryName "demo"
-
-# Disconnect from SharePoint
+} 
+# Run the cleanup
+Cleanup-DuplicateVersions -LibraryName $LibraryName
+# Disconnect
 Disconnect-PnPOnline
+
+ 
